@@ -1,0 +1,18 @@
+{
+  "extension": [
+    ".ts"
+  ],
+  "require": [
+    "ts-node/register"
+  ],
+  "exclude": [
+    "test/",
+    "src/index.ts",
+    "**/*.d.ts",
+    "**/*.spec.ts"
+  ],
+  "reporter": [
+    "lcovonly",
+    "text"
+  ]
+}
