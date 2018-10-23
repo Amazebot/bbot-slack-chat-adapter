@@ -1,0 +1,7 @@
+--require dotenv/config
+--require ts-node/register
+--require test/mocha.env.js
+--recursive
+--full-trace
+--exit
+--reporter list

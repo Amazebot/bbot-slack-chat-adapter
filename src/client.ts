@@ -1,4 +1,5 @@
 import * as bBot from 'bbot'
+import { ISlackUser } from './interfaces'
 import {
   RTMClient,
   WebClient,
@@ -6,8 +7,13 @@ import {
   RTMStartArguments,
   RTMConnectArguments,
   RTMCallResultCallback,
-  WebAPIResultCallback
+  WebAPICallResult,
+  WebAPICallError
 } from '@slack/client'
+
+interface IUsersListResult extends WebAPICallResult {
+  members: ISlackUser[]
+}
 
 /**
  * @todo Extend bBot prototypes
@@ -33,6 +39,7 @@ export class SlackClient {
   botUserIdMap: any
   channelData: any
   eventHandler: any
+  pageSize = 100
 
   /** Client initialisation. */
   constructor (options: ISlackClientOptions, private bot: typeof bBot) {
@@ -60,15 +67,19 @@ export class SlackClient {
     this.eventHandler = undefined
   }
 
+  /** Set event handler. */
+  onEvent (callback: RTMCallResultCallback) {
+    if (this.eventHandler !== callback) this.eventHandler = callback
+  }
+
   /** Open connection to the Slack RTM API. */
   connect () {
     this.bot.logger.debug(`[slack] start client with options: ${JSON.stringify(this.rtmStartOpts)}`)
     return this.rtm.start(this.rtmStartOpts)
-  }
-
-  /** Set event handler. */
-  onEvent (callback: RTMCallResultCallback) {
-    if (this.eventHandler !== callback) this.eventHandler = callback
+      .catch((err) => {
+        this.bot.logger.error(`[slack] failed to start RTM API: ${err.message}`)
+        throw err
+      })
   }
 
   /** Disconnect from the Slack RTM API */
@@ -97,41 +108,41 @@ export class SlackClient {
     }
 
     // Slack client post message options
-    const defaults = {
-      as_user: true,
-      link_names: 1
-    }
+    const defaults = { as_user: true, link_names: 1 }
 
     // @todo enable threading after bBot update allows prototype changes
     // if (envelope.message && envelope.message.thread) {
     //   options.thread_ts = envelope.message.thread
     // }
 
-    // Promisify client send callbacks for async processing
-    return new Promise((resolve, reject) => {
-      const callback: WebAPIResultCallback = (err, result) => {
-        if (err) {
-          this.bot.logger.error(`[slack] send error: ${err.message}`)
-          reject(err)
-        } else {
-          resolve(result)
-        }
-      }
-      if (typeof message === 'string') {
-        this.bot.logger.debug(`[slack] client sending message to channel ${envelope.room.id}`)
-        this.web.chat.postMessage(Object.assign({
-          text: message,
-          channel: envelope.room.id!
-        }, defaults))
-      } else {
-        this.bot.logger.debug(`[slack] client sending string to channel ${message.channel}`)
-        this.web.chat.postMessage(Object.assign(message, defaults), callback)
-      }
-    })
+    let promise: Promise<WebAPICallResult | WebAPICallError>
+    if (typeof message === 'string') {
+      this.bot.logger.debug(`[slack] client sending message to channel ${envelope.room.id}`)
+      promise = this.web.chat.postMessage(Object.assign({
+        text: message,
+        channel: envelope.room.id!
+      }, defaults))
+    } else {
+      this.bot.logger.debug(`[slack] client sending string to channel ${message.channel}`)
+      promise = this.web.chat.postMessage(Object.assign(message, defaults))
+    }
+    return promise
+      .catch((err) => this.bot.logger.error(`[slack] send error: ${err.message}`))
   }
 
-  loadUsers () {
-    // @todo
+  /** Fetch users from Slack API using pagination. */
+  async loadUsers () {
+    const members: ISlackUser[] = []
+    const limit = this.pageSize
+    let cursor: string | undefined
+    let done: boolean = false
+    do {
+      const results = (await this.web.users.list({ limit, cursor }) as IUsersListResult)
+      if (!results) return done = true
+      if (results.response_metadata) cursor = results.response_metadata.next_cursor
+      if (results.members && results.members.length) members.concat(results.members)
+      else done = true
+    } while (!done)
   }
 
   fetchUser (id: string) {
