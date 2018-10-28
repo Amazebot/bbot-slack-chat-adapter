@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "repository": "https://github.com/Amazebot/bbot-slack-chat-adapter.git",
+  "repository": "https://github.com/Amazebot/bbot-slack-message-adapter.git",
   "author": "Tim Kinnane <tim.kinnane@amazebot.chat>",
   "license": "MIT",
   "private": false,

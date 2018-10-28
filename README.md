@@ -1,9 +1,9 @@
 [guide]: https://slackapi.github.io/hubot-slack/#basic-setup
 [faq]: https://api.slack.com/faq#slack_apps
 
-# bBot Slack Chat Adapter
+# bBot-Slack Message Adapter
 
-[![npm version](https://img.shields.io/npm/v/bbot-rasa-nlu.svg?style=flat)](https://www.npmjs.com/package/bbot-slack-chat-adapter)
+[![npm version](https://img.shields.io/npm/v/bbot-rasa-nlu.svg?style=flat)](https://www.npmjs.com/package/bbot-slack-message-adapter)
 
 Chat adapter for connecting bBot to Slack.
 
@@ -41,16 +41,9 @@ to describe your usage and requirements, so we might improve it together.
 For questions about testing Slack Apps and Bot Users, see the [Slack FAQ][faq]
 
 > BEWARE: Currently tests run with the same token and workspace configured for
-> the LIVE bot, as stubs and mock responses yet haven't been developed.
+> the LIVE bot, as stubs and mock responses haven't yet been developed.
 
 While in active development, I recommend working on and running tests for one
 method at a time, using grep for the method name, e.g:
 
 ```mocha test/client.spec.ts --grep loadUsers```
-
-#### Bot Permissions
-
-The Bot User needs to be authorised to:
-- `users:read` Access your workspace profile information 
-- `channels:read` Access information about user's public channels
-- `channels:write` Modify your public channels

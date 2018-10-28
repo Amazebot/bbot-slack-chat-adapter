@@ -10,7 +10,7 @@ import {
 /** Slack adapter processes incoming/outgoing and queries via Slack RTM API. */
 export class Slack extends bBot.MessageAdapter {
   /** Name of adapter, used for logs */
-  name = 'slack-chat-adapter'
+  name = 'slack-message-adapter'
   rtm = RTMClient // exposed for scripts
   client: SlackClient
 
