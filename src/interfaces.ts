@@ -1,3 +1,17 @@
+export interface IBot {
+  id: string
+  deleted?: boolean
+  name?: string
+  updated?: number
+  user_id?: string
+  app_id?: string
+  icons?: {
+    image_36: string
+    image_48: string
+    image_72: string
+  }
+}
+
 export interface IUser {
   id: string
   team_id: string
@@ -70,11 +84,15 @@ export interface IChannel {
   is_member: boolean
   is_private: boolean
   is_mpim: boolean
+  is_im: boolean
   members: string[]
   topic: ITopic
   purpose: IPurpose
   previous_names: any[]
   num_members: number
+}
+export function isChannel (arg: any): arg is IChannel {
+  return arg.members !== undefined
 }
 
 export interface IEvent {
@@ -86,6 +104,7 @@ export interface IEvent {
     channel: string
     ts: number
   }
+  event_id: string
   event_ts: number
 }
 export function isEvent (arg: any): arg is IEvent {

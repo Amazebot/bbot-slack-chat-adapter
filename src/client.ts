@@ -1,5 +1,5 @@
 import * as bBot from 'bbot'
-import { IUser, IChannel, IEvent, isEvent, isUser } from './interfaces'
+import { IUser, IChannel, IEvent, IBot } from './interfaces'
 import {
   RTMClient,
   WebClient,
@@ -32,8 +32,7 @@ export class SlackClient {
   rtm: RTMClient
   web: WebClient
   rtmStartOpts: RTMStartArguments | RTMConnectArguments
-  botUserIdMap: any
-  channelData: any
+  botUserIdMap: { [id: string]: IBot }
   eventHandler: any
   pageSize = 100
 
@@ -42,33 +41,34 @@ export class SlackClient {
     this.rtm = new RTMClient(options.token, options.rtm)
     this.web = new WebClient(options.token, { maxRequestConcurrency: 1 })
 
-    bot.logger.debug(`[slack] client initialized with options ${JSON.stringify(options.rtm)}`)
+    this.bot.logger.debug(`[slack] client initialized with options ${JSON.stringify(options.rtm)}`)
     this.rtmStartOpts = options.rtmStart || {}
 
     // Map to convert bot user IDs (BXXXXXXXX) to user representations for
     // events from custom integrations and apps without a bot user.
     this.botUserIdMap = { 'B01': { id: 'B01', user_id: 'USLACKBOT' } }
 
-    // Map to convert conversation IDs to conversation representations.
-    this.channelData = {}
-
     // Event handling
     this.rtm.on('message', this.eventWrapper, this)
     this.rtm.on('reaction_added', this.eventWrapper, this)
     this.rtm.on('reaction_removed', this.eventWrapper, this)
-    this.rtm.on('presence_change', this.eventWrapper, this)
     this.rtm.on('member_joined_channel', this.eventWrapper, this)
     this.rtm.on('member_left_channel', this.eventWrapper, this)
-    this.rtm.on('user_change', this.updateUserInMemory, this)
+    this.rtm.on('user_change', this.eventWrapper, this)
     this.eventHandler = undefined
 
     // Create caches
     this.setupCache()
   }
 
-  /** Setup cache for specific methods before they are called. */
+  /**
+   * Cache user and channel info.
+   * Defaults keep 100 results for 5 minutes.
+   * Users are kept longer (12hrs) because their data is updated with an event.
+   */
   setupCache () {
-    // cache.use(this.web)
+    cache.create('userById', { maxAge: 60 * 60 * 12 * 1000 })
+    cache.create('channelbyId')
     cache.create('channelIdByName')
   }
 
@@ -159,14 +159,29 @@ export class SlackClient {
     return channels
   }
 
-  /** Get channel by its name. */
+  /** Get channel by its ID (from cache if available). */
+  async channelById (channel: string): Promise<IChannel | undefined> {
+    // get from cache
+    const cachedChannel = cache.get('channelById', channel)
+    if (cachedChannel) return cachedChannel as IChannel
+    // not in cache
+    this.bot.logger.debug(`[slack] getting channel info: ${channel}`)
+    const result = await this.web.channels.info({ channel })
+    if (result.ok) {
+      this.bot.logger.debug(`[slack] channel info ${JSON.stringify((result as any).channel)}`)
+      cache.set('channelById', channel, (result as any).channel)
+      return (result as any).channel
+    }
+  }
+
+  /** Get channel by its name (has to load all and filter). */
   async channelByName (name: string) {
     const channels = await this.loadChannels()
     return channels.find((channel) => channel.name === name)
   }
 
-  /** Get just the ID from a channel by name */
-  async channelIdByName (name: string) {
+  /** Get just the ID from a channel by name (from cache if available) */
+  async channelIdByName (name: string): Promise<string | undefined> {
     // get from cache
     const cachedId = cache.get('channelIdByName', name)
     if (cachedId) return cachedId
@@ -178,112 +193,30 @@ export class SlackClient {
     }
   }
 
-  /** Fetch user info from the brain. If not available, call users.info */
-  fetchUser (id: string) {
-    // User exists in the brain - retrieve this representation
-    if (this.bot.userById(id)) return Promise.resolve(this.bot.userById(id))
-    // User is not in brain - call users.info
-    // The user will be added to the brain in EventHandler
-    return this.web.users.info({ user: id }).then((r) => {
-      return this.updateUserInMemory((r as any).user)
-    })
+  /** Get the user by their ID (from cache if available) */
+  async userById (user: string): Promise<IUser | undefined> {
+    // get from cache
+    const cachedUser = cache.get('userById', user)
+    if (cachedUser) return cachedUser
+    // not in cache
+    const result = await this.web.users.info({ user })
+    if (result.ok) cache.set('userById', user, (result as any).user)
+    return (result as any).user
   }
 
-  /** Fetch bot user info from the bot -> user map */
-  fetchBotUser (id: string) {
-    if (this.botUserIdMap[id]) return Promise.resolve(this.botUserIdMap[id])
-    // Bot user is not in mapping - call bots.info
-    this.web.bots.info({ bot: id }).then((r) => (r as any).bot)
+  /** Get a bot user by its ID (from internal collection if available) */
+  async botById (bot: string): Promise<IBot | undefined> {
+    if (!this.botUserIdMap[bot]) {
+      const result = await this.web.bots.info({ bot })
+      if (result.ok) this.botUserIdMap[bot] = (result as any).bot
+    }
+    return this.botUserIdMap[bot]
   }
 
-  /** Fetch conversation from map. If not available, call conversations.info */
-  async fetchConversation (id: string) {
-    // Current date minus 5 minutes (time of expiration for conversation info)
-    const expiration = Date.now() - (5 * 60 * 1000)
-    // Check whether conversation is held in client's channelData map and whether information is expired
-    if (
-      this.channelData[id] &&
-      this.channelData[id].channel &&
-      expiration < this.channelData[id].updated
-    ) return Promise.resolve(this.channelData[id].channel)
-    // Delete data from map if it's expired
-    if (this.channelData[id]) delete this.channelData[id]
-    // Return conversations.info promise
-    const { channel } = (await this.web.conversations.info({ channel: id }) as any)
-    if (channel) this.channelData[id] = { channel, updated: Date.now() }
-    return channel
-  }
-
-  /**
-   * Will return a bBot user object in memory.
-   * User can represent a Slack human user or bot user.
-   * This may be called as a handler for `user_change` events or to update a
-   * a single user with its latest SlackUserInfo object.
-   */
-  updateUserInMemory (userOrEvent: IEvent | IUser) {
-    // if invoked as a `user_change` handler, unwrap the user from the event
-    const user = (isEvent(userOrEvent) && isUser(userOrEvent.user))
-      ? userOrEvent.user
-      : userOrEvent
-    return this.bot.userById(user.id, user)
-  }
-
-  /**
-   * Processes events to fetch additional data or rearrange the shape of an
-   * event before handing off to the eventHandler.
-   */
+  /** Process events with given handler. */
   async eventWrapper (e: IEvent) {
-    if (!this.eventHandler) return
-
-    // Handle parallel async requests
-    const props: any = {}
-    if (e.user) {
-      props.user = isUser(e.user)
-        ? this.fetchUser(e.user.id)
-        : this.fetchUser(e.user)
-    }
-    if (e.bot_id) props.bot = this.fetchBotUser(e.bot_id)
-    if (e.item_user) props.itemUser = this.fetchUser(e.item_user)
-    await Promise.all(props.values())
-      .catch((err) => {
-        this.bot.logger.error(`[slack] RTM error fetching info for a property: ${err.message}.`)
-      })
-
-    // Start augmenting the event with the fetched data
-    if (props.itemUser) e.item_user = props.itemUser
-
-    // Assigning `event.user` properly depends on how the message was sent
-    if (props.user) {
-      // messages sent from human users, apps with a bot user and using the bot
-      // token, and slackbot have the user property: this is preferred if its available
-      e.user = props.user
-    // props.bot will exist and be false if bot_id in `botUserIdMap` but is
-    // from custom integration or app without bot user
-    } else if (props.bot) {
-      // props.bot is user representation of bot since it exists in botToUserMap
-      if (this.botUserIdMap[e.bot_id]) {
-        e.user = props.bot
-      // bot_id exists on all messages with subtype bot_message
-      // these messages only have a user_id property if sent from a bot user
-      // therefore the above assignment will not happen for all messages from
-      // custom integrations or apps without a bot user
-      } else if (props.bot.user_id) {
-        return this.web.users.info(props.bot.user_id).then((res) => {
-          e.user = (res as any).user
-          this.botUserIdMap[e.bot_id] = (res as any).user
-          return e
-        })
-      // bot doesn't have an associated user id
-      } else {
-        this.botUserIdMap[e.bot_id] = false
-        e.user = { id: e.bot_id, team_id: e.team_id } as IUser
-      }
-    } else {
-      e.user = {} as IUser
-    }
-    // once the event is fully populated, hand off to the eventHandler
     if (this.eventHandler) {
-      return this.eventHandler(e)
+      return Promise.resolve(this.eventHandler(e))
         .catch((err: Error) => {
           this.bot.logger.error(`[slack] Error processing an RTM event: ${err.message}.`)
         })

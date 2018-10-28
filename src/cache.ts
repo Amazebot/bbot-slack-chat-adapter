@@ -72,7 +72,7 @@ export function set (method: string, key: string, value: any) {
  * @param method Method name for cache to get
  * @param key Key for method result set to return
  */
-export function get (method: string, key: string): LRU.Cache<string, any> | undefined {
+export function get (method: string, key: string) {
   if (results.has(method)) return results.get(method)!.get(key)
 }
 
