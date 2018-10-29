@@ -6,8 +6,30 @@
   "configurations": [
     {
       "type": "node",
+      "request": "attach",
+      "name": "Attach by Process ID",
+      "processId": "${command:PickProcess}"
+    },
+    {
+      "type": "node",
       "request": "launch",
-      "name": "Current .ts File",
+      "name": "Start Bot",
+      "program": "${workspaceFolder}/node_modules/ts-node/dist/bin.js",
+      "cwd": "${workspaceRoot}",
+      "args": ["${workspaceFolder}/src/start.ts"],
+      "env": {
+        "NODE_ENV": "development",
+        "BOT_LOG_LEVEL": "debug",
+      },
+      "protocol": "inspector",
+      "restart": true,
+      "stopOnEntry": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Current File",
       "cwd": "${workspaceRoot}",
       "env": {
         "NODE_ENV": "development",

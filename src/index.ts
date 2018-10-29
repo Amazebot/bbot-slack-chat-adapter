@@ -1,11 +1,10 @@
 import * as bBot from 'bbot'
 import { SlackClient } from './client'
 import {
-  ChatPostMessageArguments,
   AttachmentAction,
   MessageAttachment
 } from '@slack/client'
-import { IEvent, isUser, IUser, IBot, isChannel } from './interfaces'
+import { IEvent, isUser, IUser, IBot, isConversation } from './interfaces'
 import * as cache from './cache'
 
 /** Slack adapter processes incoming/outgoing and queries via Slack RTM API. */
@@ -62,6 +61,34 @@ export class Slack extends bBot.MessageAdapter {
           await this.client.send(message)
         }
         break
+      case 'ephemeral' :
+        if (!envelope.user) throw new Error('Ephemeral without user')
+        if (!envelope.room.id) throw new Error('Ephemeral without channel')
+        for (let message of this.parseEnvelope(envelope)) {
+          message.user = envelope.user.id
+          await this.client.ephemeral(message)
+        }
+        break
+      case 'direct' :
+        if (!envelope.strings) throw new Error('DM without strings')
+        if (!envelope.user) throw new Error('DM without user')
+        const im = await this.client.openDirect(envelope.user.id)
+        if (!im) throw new Error(`[slack] could not send, failed to open IM for ${envelope.user.id}`)
+        for (let message of this.parseEnvelope(envelope)) {
+          message.channel = im.id
+          await this.client.send(message)
+        }
+        break
+      case 'react' :
+        if (!envelope.strings) throw new Error('React without string')
+        if (!envelope.room.id) throw new Error('React without channel')
+        if (!envelope.message) throw new Error('React without message')
+        for (let reaction of envelope.strings) {
+          reaction = reaction.replace(':', '')
+          reaction = reaction.replace('-', '_')
+          await this.client.react(reaction, envelope.room.id, envelope.message.id)
+        }
+        break
     }
   }
 
@@ -97,47 +124,45 @@ export class Slack extends bBot.MessageAdapter {
     // use null user (may be custom integration without bot user)
     } else slackUser = { id: 'null' } as IUser
 
-    // put user in room from channel info
+    // put user in room from conversation info
     let room
     if (e.channel) {
-      const channel = (isChannel(e.channel))
+      const channel = (isConversation(e.channel))
         ? e.channel
-        : await this.client.channelById(e.channel)
+        : await this.client.conversationById(e.channel)
       if (channel) {
-        let type = '?'
-        if (channel.is_channel) type = 'c'
-        else if (channel.is_im) type = 'd'
-        else if (channel.is_mpim) type = 'm'
-        else if (channel.is_shared) type = 's'
-        else if (channel.is_private) type = 'p'
-        room = { id: channel.id, name: channel.name, type }
+        room = {
+          id: channel.id,
+          name: channel.name,
+          type: this.client.conversationType(e.channel)
+        }
       }
     }
 
     // populate bot user from slack user and channel info
     const user = this.bot.userById(slackUser.id, Object.assign({}, slackUser, { room }))
+    // @todo let bBot message constructors accept final optional meta param
+    // @todo add ts to meta, use for reactions etc, but reinstate id as below
+    // const id = e.client_msg_id || e.event_id
+    const id = e.event_ts.toString()
 
     // receive appropriate bot message type
     if (e.type === 'member_joined_channel') {
       this.bot.logger.debug(`[slack] ${user.name} joined ${user.room.name}`)
-      return this.bot.receive(new bBot.EnterMessage(user, e.event_id))
-
+      return this.bot.receive(new bBot.EnterMessage(user, id))
     } else if (e.type === 'member_left_channel') {
       this.bot.logger.debug(`[slack] ${user.name} joined ${e.channel}`)
-      return this.bot.receive(new bBot.LeaveMessage(user, e.event_id))
-
+      return this.bot.receive(new bBot.LeaveMessage(user, id))
     } else if (e.type === 'message') {
-      this.bot.logger.debug(`[slack] message from ${user.name}`)
-
-      if (Array.isArray(e.attachments) && e.attachments.length) {
-        this.bot.logger.debug('[rocketchat] hear type RichMessage')
+      if (Array.isArray(e.attachments) || Array.isArray(e.files)) {
+        this.bot.logger.debug(`[slack] rich message from ${user.name}`)
+        const attachments = e.attachments || e.files
         return this.bot.receive(new bBot.RichMessage(user, {
-          attachments: e.attachments,
+          attachments,
           text: e.text
-        }, e.client_msg_id))
+        }, id))
       }
-
-      return this.bot.receive(new bBot.TextMessage(user, e.text, e.client_msg_id))
+      return this.bot.receive(new bBot.TextMessage(user, e.text, id))
     }
   }
 
@@ -149,7 +174,7 @@ export class Slack extends bBot.MessageAdapter {
   parseEnvelope (envelope: bBot.Envelope, channel?: string) {
     if (!channel) channel = (envelope.room) ? envelope.room.id : undefined
     if (!channel) throw new Error('[slack] cannot parse envelope without channel ID')
-    const messages: ChatPostMessageArguments[] = []
+    const messages: any[] = []
     const attachments: MessageAttachment[] = []
     const actions: AttachmentAction[] = []
     // Create basic message for each string

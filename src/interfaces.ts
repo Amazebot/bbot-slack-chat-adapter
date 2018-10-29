@@ -1,3 +1,11 @@
+export interface IConnection {
+  url: string,
+  team: { id: string, name: string, domain: string },
+  self: { id: string, name: string },
+  scopes: string[],
+  acceptedScopes: string[]
+}
+
 export interface IBot {
   id: string
   deleted?: boolean
@@ -70,10 +78,14 @@ export interface IPurpose {
   last_set: number
 }
 
-export interface IChannel {
+export interface IConversation {
   id: string
   name: string
   is_channel: boolean
+  is_group: boolean
+  is_private: boolean
+  is_mpim: boolean
+  is_im: boolean
   created: number
   creator: string
   is_archived: boolean
@@ -82,16 +94,13 @@ export interface IChannel {
   is_shared: boolean
   is_org_shared: boolean
   is_member: boolean
-  is_private: boolean
-  is_mpim: boolean
-  is_im: boolean
   members: string[]
   topic: ITopic
   purpose: IPurpose
   previous_names: any[]
   num_members: number
 }
-export function isChannel (arg: any): arg is IChannel {
+export function isConversation (arg: any): arg is IConversation {
   return arg.members !== undefined
 }
 

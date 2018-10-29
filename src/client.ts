@@ -1,5 +1,5 @@
 import * as bBot from 'bbot'
-import { IUser, IChannel, IEvent, IBot } from './interfaces'
+import { IUser, IConversation, IEvent, IBot, IConnection } from './interfaces'
 import {
   RTMClient,
   WebClient,
@@ -7,7 +7,8 @@ import {
   RTMStartArguments,
   RTMConnectArguments,
   RTMCallResultCallback,
-  ChatPostMessageArguments
+  ChatPostMessageArguments,
+  ChatPostEphemeralArguments
 } from '@slack/client'
 import * as cache from './cache'
 
@@ -35,6 +36,7 @@ export class SlackClient {
   botUserIdMap: { [id: string]: IBot }
   eventHandler: any
   pageSize = 100
+  connection?: IConnection
 
   /** Client initialisation. */
   constructor (options: ISlackClientOptions, private bot: typeof bBot) {
@@ -68,7 +70,7 @@ export class SlackClient {
    */
   setupCache () {
     cache.create('userById', { maxAge: 60 * 60 * 12 * 1000 })
-    cache.create('channelbyId')
+    cache.create('conversationById')
     cache.create('channelIdByName')
   }
 
@@ -78,13 +80,15 @@ export class SlackClient {
   }
 
   /** Open connection to the Slack RTM API. */
-  connect () {
+  async connect () {
     this.bot.logger.debug(`[slack] start client with options: ${JSON.stringify(this.rtmStartOpts)}`)
-    return this.rtm.start(this.rtmStartOpts)
-      .catch((err) => {
-        this.bot.logger.error(`[slack] failed to start RTM API: ${err.message}`)
-        throw err
-      })
+    const result = await this.rtm.start(this.rtmStartOpts)
+    if (result.ok) {
+      this.connection = (result as any)
+      this.bot.logger.info(`[slack] connected as ${this.connection!.self.name} (${this.connection!.self.id})`)
+    } else {
+      throw new Error(`[slack] connection failed with error: ${result.error}`)
+    }
   }
 
   /** Disconnect from the Slack RTM API */
@@ -102,23 +106,31 @@ export class SlackClient {
       })
   }
 
-  /**
-   * Respond to incoming Slack message or dispatch unprompted, using Web API.
-   * @todo Add interface/s for Slack postMessage object schema
-   */
+  /** Respond to incoming Slack message or dispatch unprompted. */
   send (message: ChatPostMessageArguments) {
     this.bot.logger.debug(`[slack] send to channel: ${message.channel}, message: ${message}`)
-
-    // Slack client post message options
-    const defaults = { as_user: true, link_names: 1 }
-
+    const defaults = { as_user: true, link_names: 1 } // post message options
     // @todo enable threading after bBot update allows prototype changes
     // if (envelope.message && envelope.message.thread) {
     //   options.thread_ts = envelope.message.thread
     // }
-
     return this.web.chat.postMessage(Object.assign(message, defaults))
-      .catch((err) => this.bot.logger.error(`[slack] send error: ${err.message}`))
+      .catch((err) => this.bot.logger.error(`[slack] postMessage error: ${err.message}`))
+  }
+
+  /** Send an ephemeral message to a user in a given channel */
+  ephemeral (message: ChatPostEphemeralArguments) {
+    this.bot.logger.debug(`[slack] send ephemeral to user ${message.user} channel ${message.channel}`)
+    const defaults = { as_user: true, link_names: 1 } // post message options
+    return this.web.chat.postEphemeral(Object.assign(message, defaults))
+      .catch((err) => this.bot.logger.error(`[slack] postEphemeral error: ${err.message}`))
+  }
+
+  /** Set a reaction (emoji) on a given message. */
+  react (name: string, channel: string, timestamp: string) {
+    this.bot.logger.debug(`[slack] set reaction :${name}:, on message at ${timestamp} in ${channel}`)
+    return this.web.reactions.add({ name, channel, timestamp })
+      .catch((err) => this.bot.logger.error(`[slack] add reaction error: ${err.message}`))
   }
 
   /** Do API list request/s, concatenating paginated results */
@@ -153,23 +165,47 @@ export class SlackClient {
     return members
   }
 
+  /** Get the type of a conversation. */
+  conversationType (conversation: IConversation) {
+    if (conversation.is_channel) return 'channel'
+    else if (conversation.is_im) return 'im'
+    else if (conversation.is_mpim) return 'mpim'
+    else if (conversation.is_shared) return 'share'
+    else if (conversation.is_group) return 'group'
+  }
+
   /** Fetch channels from Slack API. */
   async loadChannels () {
-    const channels: IChannel[] = await this.getList('channels')
+    const channels: IConversation[] = await this.getList('channels')
     return channels
   }
 
-  /** Get channel by its ID (from cache if available). */
-  async channelById (channel: string): Promise<IChannel | undefined> {
+  /** Open direct message channel with a user (or resume cached) */
+  async openDirect (user: string): Promise<IConversation | undefined> {
     // get from cache
-    const cachedChannel = cache.get('channelById', channel)
-    if (cachedChannel) return cachedChannel as IChannel
+    // const cachedChannel = cache.get('openDirect', user)
+    // if (cachedChannel) return (cachedChannel as string)
+    // not in cache
+    this.bot.logger.debug(`[slack] opening direct channel with ${user}`)
+    const result = await this.web.im.open({ user })
+    if (result.ok) {
+      this.bot.logger.debug(`[slack] IM info ${JSON.stringify((result as any).channel)}`)
+      cache.set('openDirect', user, (result as any).channel)
+      return (result as any).channel
+    }
+  }
+
+  /** Get conversation/channel by its ID (from cache if available). */
+  async conversationById (channel: string): Promise<IConversation | undefined> {
+    // get from cache
+    const cachedChannel = cache.get('conversationById', channel)
+    if (cachedChannel) return cachedChannel as IConversation
     // not in cache
     this.bot.logger.debug(`[slack] getting channel info: ${channel}`)
-    const result = await this.web.channels.info({ channel })
+    const result = await this.web.conversations.info({ channel })
     if (result.ok) {
       this.bot.logger.debug(`[slack] channel info ${JSON.stringify((result as any).channel)}`)
-      cache.set('channelById', channel, (result as any).channel)
+      cache.set('conversationById', channel, (result as any).channel)
       return (result as any).channel
     }
   }
@@ -213,8 +249,9 @@ export class SlackClient {
     return this.botUserIdMap[bot]
   }
 
-  /** Process events with given handler. */
+  /** Process events with given handler (ignoring those from bot's self). */
   async eventWrapper (e: IEvent) {
+    if (this.connection && e.user === this.connection.self.id) return
     if (this.eventHandler) {
       return Promise.resolve(this.eventHandler(e))
         .catch((err: Error) => {
